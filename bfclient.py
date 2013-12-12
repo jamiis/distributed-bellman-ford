@@ -107,7 +107,7 @@ def node(cost, direct, is_neighbor=False, costs=None):
         'cost'       : cost,
         'direct'     : direct,
         'is_neighbor': is_neighbor,
-        'costs'      : defaultdict(lambda c: float("inf")),
+        'costs'      : costs,
     }
 
 def get_addr(ip, port):
@@ -118,7 +118,7 @@ def get_neighbors():
     return dict([d for d in nodes.items() if d[1]['is_neighbor']])
 
 def get_costs():
-    """ return dict mapping nodes to costs; returns own distance vector """
+    """ return dict mapping nodes to costs """
     return dict([ (no[0], no[1]['cost']) for no in nodes.items()] )
 
 if __name__ == '__main__':
