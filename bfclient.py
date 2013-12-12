@@ -1,4 +1,4 @@
-import sys, socket
+import sys, socket, json
 from select import select
 from collections import defaultdict
 
@@ -7,6 +7,11 @@ if DEBUG:
     from pprint import pprint
 
 SIZE = 1024
+LINKDOWN = "linkdown"
+LINKUP = "linkup"
+SHOWRT = "showrt"
+CLOSE = "close"
+COSTSUPDATE= "costs-update"
 
 nodes_example = {
     '127.0.0.0': {
@@ -43,31 +48,86 @@ nodes_example = {
 
 def estimate_costs():
     """ recalculate inter-node path costs using bellman ford algorithm """
-    for no in nodes.keys():
-        cost = float("inf")
-        neighbors = get_neighbors() 
-        for ne in neighbors.keys():
-            # dist = direct cost to neighbor + cost from node to neighbor
-            dist = neighbors[ne]['direct'] + nodes[no]['costs'][ne]
-            if dist < cost:
-                cost = dist
-        nodes[no]['cost'] = cost
+    for destination_addr, destination in nodes.iteritems():
+        # we don't need to update the distance to ourselves
+        if destination_addr != me:
+            # iterate through neighbors and find cheapest route
+            cost = float("inf")
+            for neighbor_addr, neighbor in get_neighbors().iteritems():
+                # distance = direct cost to neighbor + cost from destination to neighbor
+                dist = neighbor['direct'] + destination['costs'][neighbor_addr]
+                if dist < cost:
+                    cost = dist
+            # set new estimated cost to node in the network
+            destination['cost'] = cost
+    if DEBUG: print_nodes()
 
 def join_network():
     """ add node to the network """
     inputs = [sock, sys.stdin]
     running = True
+    # TODO send route update to notify nodes of joining
     while running:
         in_ready, out_ready, except_ready = select(inputs,[],[]) 
         for s in in_ready:
             if s == sys.stdin:
+                # input from user
                 cmd, args = parse_cmd(sys.stdin.readline())
-                run_cmd(cmd, args)
-            else:
-                print 's == sock'
-                data, addr = s.recvfrom(SIZE)
-                # TODO update routing tables
+                if cmd not in cmds:
+                    print "command '{0}' is not a valid command".format(cmd)
+                    return
+                cmds[cmd](*args)
+            else: 
+                # update from another node
+                data, sender = s.recvfrom(SIZE)
+                loaded = json.loads(data)
+                update = loaded['type']
+                payload = loaded['payload']
+                if update not in updates:
+                    print "update {0} from {1} not defined".format(update, sender)
+                    return
+                updates[update](*sender, **payload)
+
     sock.close()
+
+update_example = {
+    'type': COSTSUPDATE,
+    'payload': {
+        'costs': {
+            '127.0.0.0': 16.0,
+            '127.0.0.1': 5.0,
+            '127.0.0.3': 1.0,
+        }
+    }
+}
+update_example_two = {
+    'type': LINKDOWN,
+    'payload': {},
+}
+
+def update_costs(host, port, costs):
+    """ update neighbor's costs """
+    addr = get_addr(host, port)
+    if not in_network(addr): return
+    neighbor = nodes[addr]
+    if not is_neighbor(neighbor): return
+    neighbor['costs'] = costs
+    estimate_costs()
+
+def send_update():
+    """ send distance vector to neighbors """
+    # TODO get distance vector
+    data = json.dumps({
+        'type': COSTSUPDATE,
+        'payload': {
+            'costs': get_costs(),
+        }
+    })
+    for ne in get_neighbors().keys():
+        # TODO sock send shit
+        host, port = ne.split(':')
+        port = int(port)
+        sock.sendto(data, (host,port))
 
 def setup_server():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -105,14 +165,6 @@ def create_node(cost, is_neighbor=False, direct=None, costs=None):
     node['costs'] = costs
     return node
 
-def run_cmd(cmd, args):
-    """ wrapper to run a pre-defined command """
-    if cmd not in cmds:
-        print "command '{0}' is not a valid command".format(cmd)
-        return
-    # lookup and call command via commands dict
-    cmds[cmd](*args)
-
 def parse_cmd(s):
     """ extract command name and args from string (likely from stdin) """
     s = s.split()
@@ -126,27 +178,22 @@ def linkdown(host, port):
     addr = get_addr(host, port)
     # error checks
     # TODO should we even check for node not in network?
-    if addr not in nodes:
-        print 'node {0} is not in the network'
-        return
+    if not in_network(neighbor): return
     node = nodes[addr]
-    if not node['is_neighbor']:
-        print 'node {0} is not a neighbor so no can be taken down'.format(addr)
-        return
+    if not is_neighbor(node): return
+
     # save direct distance to neighbor, then set to infinity
     node['saved'] = node['direct']
     node['direct'] = float("inf")
     node['is_neighbor'] = False
     # recalculate cost estimates
     estimate_costs()
-    # TODO need to tell former neighbor that we aren't neighbors anymore!
+    # TODO send linkdown msg to neighbor
     if DEBUG: print_nodes()
 
 def linkup(host, port):
     addr = get_addr(host, port)
-    if addr not in nodes:
-        print 'node {0} is not in the network'
-        return
+    if not in_network(addr): return
     node = nodes[addr]
     if 'saved' not in node:
         print 'node {0} was not a previous neighbor'
@@ -170,7 +217,20 @@ def showrt():
     pass
 
 def close():
+    # TODO send linkdown to neighbors
     sys.exit()
+
+def is_neighbor(node):
+    if not node['is_neighbor']:
+        print 'node {0} is not a neighbor so no can be taken down'.format(addr)
+        return False
+    return True
+
+def in_network(addr):
+    if addr not in nodes:
+        print 'node {0} is not in the network'.format(addr)
+        return False
+    return True
 
 def get_addr(host, port):
     return "{host}:{port}".format(host=host, port=port)
@@ -183,16 +243,16 @@ def get_costs():
     """ return dict mapping nodes to costs """
     return dict([ (no[0], no[1]['cost']) for no in nodes.items()] )
 
-# map command name to function
-LINKDOWN = "linkdown"
-LINKUP = "linkup"
-SHOWRT = "showrt"
-CLOSE = "close"
+# map command/update names to functions
 cmds = {
     LINKDOWN: linkdown,
     LINKUP  : linkup,
     SHOWRT  : showrt,
     CLOSE   : close,
+}
+updates = {
+    LINKDOWN   : linkdown,
+    COSTSUPDATE: update_costs,
 }
 
 def print_nodes():
