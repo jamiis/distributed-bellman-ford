@@ -4,7 +4,7 @@ from collections import defaultdict
 from threading import Thread, Timer
 from datetime import datetime
 
-SIZE = 1024
+SIZE = 4096
 LINKDOWN = "linkdown"
 LINKUP = "linkup"
 SHOWRT = "showrt"
@@ -68,7 +68,6 @@ def update_costs(host, port, **kwargs):
     """ update neighbor's costs """
     costs = kwargs['costs']
     addr = addr2key(host, port)
-    if not in_network(addr): return
     # if a node listed in costs is not in our list of nodes...
     for node in costs:
         if node not in nodes:
