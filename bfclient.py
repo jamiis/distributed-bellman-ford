@@ -183,9 +183,12 @@ def linkup(host, port):
     # run bellman-ford
     estimate_costs()
 
+def formatted_now():
+    return datetime.now().strftime("%b-%d-%Y, %I:%M %p, %S seconds")
+
 def show_neighbors():
     """ show active neighbors """
-    print datetime.now()
+    print formatted_now()
     print "Neighbors: "
     for addr, neighbor in get_neighbors().iteritems():
         print "{addr}, cost:{cost}, direct:{direct}".format(
@@ -195,7 +198,7 @@ def show_neighbors():
     print # extra line
 
 def showrt():
-    print datetime.now()
+    print formatted_now()
     print "Distance vector list is:"
     for addr, node in nodes.iteritems():
         if addr != me:
