@@ -43,39 +43,6 @@ class ResettableTimer():
         t.daemon = True
         return t
 
-nodes_example = {
-    '127.0.0.0': {
-        'cost': 0.0,
-        'is_neighbor': False, # TODO not sure
-    },
-    '127.0.0.1': {
-        'cost': 10.0,
-        'is_neighbor': True,
-        # vals below are present iff is_neighbor
-        'direct' : 10.0,
-        'costs': { 
-            '127.0.0.0': 10.0,
-            '127.0.0.2': 5.0,
-            '127.0.0.3': 15.0,
-        }
-    },
-    '127.0.0.2': {
-        'cost': 15.0,
-        'is_neighbor': True,
-        'direct' : 100.0,
-        'costs': { 
-            '127.0.0.0': 16.0,
-            '127.0.0.1': 5.0,
-            '127.0.0.3': 1.0,
-        }
-    },
-    '127.0.0.3': {
-        'cost': 16.0, # 0 -> 1 -> 2 -> 3
-        'is_neighbor': False,
-        'direct': float("inf") # ? 
-    },
-}
-
 def estimate_costs():
     """ recalculate inter-node path costs using bellman ford algorithm """
     for destination_addr, destination in nodes.iteritems():
@@ -94,21 +61,6 @@ def estimate_costs():
             # set new estimated cost to node in the network
             destination['cost'] = cost
             destination['route'] = nexthop
-
-update_example = {
-    'type': COSTSUPDATE,
-    'payload': {
-        'costs': {
-            '127.0.0.0': 16.0,
-            '127.0.0.1': 5.0,
-            '127.0.0.3': 1.0,
-        }
-    }
-}
-update_example_two = {
-    'type': LINKDOWN,
-    'payload': {},
-}
 
 def update_costs(host, port, **kwargs):
     """ update neighbor's costs """
