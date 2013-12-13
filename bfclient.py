@@ -2,6 +2,7 @@ import sys, socket, json, time
 from select import select
 from collections import defaultdict
 from threading import Thread, Timer
+from datetime import datetime
 
 DEBUG = True
 if DEBUG:
@@ -86,13 +87,16 @@ def estimate_costs():
         if destination_addr != me:
             # iterate through neighbors and find cheapest route
             cost = float("inf")
+            nexthop = ''
             for neighbor_addr, neighbor in get_neighbors().iteritems():
                 # distance = direct cost to neighbor + cost from destination to neighbor
                 dist = neighbor['direct'] + destination['costs'][neighbor_addr]
                 if dist < cost:
                     cost = dist
+                    nexthop = neighbor_addr
             # set new estimated cost to node in the network
             destination['cost'] = cost
+            destination['route'] = nexthop
     if DEBUG: print_nodes()
 
 update_example = {
@@ -141,10 +145,9 @@ def broadcast(data):
 def setup_server():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        host = socket.gethostbyname(socket.gethostname())
-        sock.bind((host, port))
+        sock.bind((localhost, port))
         if DEBUG:
-            print "listening on {0}:{1}\n".format(host, port)
+            print "listening on {0}:{1}\n".format(localhost, port)
     except socket.error, msg:
         print "an error occured binding the server socket. \
                error code: {0}, msg:{1}\n".format(msg[0], msg[1])
@@ -160,7 +163,8 @@ def parse_argv():
     neighbors = []
     costs = []
     while len(s):
-        neighbors.append(addr2key(host=s[0], port=s[1]))
+        host = localhost if s[0].lower() == 'localhost' else s[0]
+        neighbors.append(addr2key(host=host, port=s[1]))
         costs.append(float(s[2]))
         del s[0:3]
     return port, timeout, neighbors, costs
@@ -172,7 +176,10 @@ def create_node(cost, is_neighbor=False, direct=None, costs=None, addr=None):
     costs  = costs  if costs  != None else defaultdict(lambda: float("inf"))
     node['direct'] = direct
     node['costs'] = costs
+    node['route'] = ''
     if is_neighbor:
+        node['route'] = addr
+        # ensure neighbor is transmitting cost updates using a resettable timer
         monitor = ResettableTimer(
             interval = 3*timeout, 
             func = linkdown,
@@ -210,15 +217,15 @@ def linkup(host, port):
     estimate_costs()
 
 def showrt():
-    '''
-    TODO need to create dict/list as below.
-    have yet to implement storing next-hop router!
-    { 'addr' : {
-        'cost': 20.0, # total estimated cost
-        'route': '111.22.333.1',
-    }, ...  }
-    '''
-    pass
+    print datetime.now(), ' Distance vector list is:'
+    for addr, node in nodes.iteritems():
+        if addr != me:
+            print ('Destination = {destination}, '
+                   'Cost = {cost}, '
+                   'Link = ({nexthop})').format(
+                        destination = addr,
+                        cost        = node['cost'],
+                        nexthop     = node['route'])
 
 def close():
     # notify neighbors that she's comin daaaahwn!
@@ -268,9 +275,14 @@ updates = {
 }
 
 if __name__ == '__main__':
+    localhost = socket.gethostbyname(socket.gethostname())
     port, timeout, neighbors, costs = parse_argv()
     # initialize dict of nodes to all neighbors
-    nodes = defaultdict(lambda: { 'cost': float("inf"), 'is_neighbor': False })
+    nodes = defaultdict(lambda: { 
+        'cost': float("inf"),
+        'is_neighbor': False,
+        'route': '',
+    })
     for neighbor, cost in zip(neighbors, costs):
         nodes[neighbor] = create_node(
                 cost=cost, direct=cost, is_neighbor=True, addr=neighbor)
