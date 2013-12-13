@@ -42,6 +42,8 @@ class ResettableTimer():
         t = Timer(self.interval, self.func, self.args)
         t.daemon = True
         return t
+    def cancel(self):
+        self.countdown.cancel()
 
 def estimate_costs():
     """ recalculate inter-node path costs using bellman ford algorithm """
@@ -164,6 +166,7 @@ def linkdown(host, port, **kwargs):
     node['saved'] = node['direct']
     node['direct'] = float("inf")
     node['is_neighbor'] = False
+    node['silence_monitor'].cancel()
     # run bellman-ford
     estimate_costs()
 
@@ -172,7 +175,7 @@ def linkup(host, port):
     if not in_network(addr): return
     node = nodes[addr]
     if 'saved' not in node:
-        print 'node {0} was not a previous neighbor\n'
+        print "{0} wasn't a previous neighbor\n".format(addr)
         return
     # restore saved direct distance
     node['direct'] = node['saved']
@@ -194,7 +197,7 @@ def show_neighbors():
 
 def showrt():
     print datetime.now()
-    print " Distance vector list is:"
+    print "Distance vector list is:"
     for addr, node in nodes.iteritems():
         if addr != me:
             print ("Destination = {destination}, "
@@ -241,7 +244,7 @@ def print_nodes():
         print addr
         for k,v in node.iteritems():
             print '---- ', k, '\t\t', v
-    print
+    print # extra line
 
 # map command/update names to functions
 user_cmds = {
@@ -286,15 +289,17 @@ if __name__ == '__main__':
                 if not len(user_input): continue
                 cmd = user_input[0].lower()
                 if cmd not in user_cmds:
-                    print "'{0}' is not a valid command".format(cmd)
+                    print "'{0}' is not a valid command\n".format(cmd)
                     continue
                 args = [] 
                 if cmd in [LINKDOWN, LINKUP]:
                     args = user_input[1:]
+                    if len(args) != 2:
+                        print "'{0}' cmd requires host and port args\n".format(cmd)
+                        continue
                     # notify neighbor that link is coming down or being restored
                     data = json.dumps({'type': cmd, 'payload': {}})
-                    addr = (args[0], int(args[1]))
-                    print 'send {0} to {1}:{2}'.format(data,args[0],int(args[1]))
+                    addr = (get_host(args[0]), int(args[1]))
                     sock.sendto(data, addr)
                 user_cmds[cmd](*args)
             else: 
@@ -304,8 +309,7 @@ if __name__ == '__main__':
                 update = loaded['type']
                 payload = loaded['payload']
                 if update not in updates:
-                    print "update '{0}' not defined".format(update)
+                    print "'{0}' is not in the update protocol\n".format(update)
                     continue
                 updates[update](*sender, **payload)
     sock.close()
-
