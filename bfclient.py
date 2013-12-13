@@ -1,7 +1,7 @@
 import sys, socket, json, time
 from select import select
 from collections import defaultdict
-from threading import Thread
+from threading import Thread, Timer
 
 DEBUG = True
 if DEBUG:
@@ -15,6 +15,7 @@ CLOSE = "close"
 COSTSUPDATE= "costs-update"
 
 class RepeatTimer(Thread):
+    """ thread that will call a function every interval seconds """
     def __init__(self, interval, target):
         Thread.__init__(self)
         self.target = target
@@ -23,8 +24,27 @@ class RepeatTimer(Thread):
         self.stopped = False
     def run(self):
         while not self.stopped:
-            self.target()
             time.sleep(self.interval)
+            self.target()
+
+class ResettableTimer():
+    def __init__(self, interval, func, args=None):
+        if args != None: assert type(args) is list
+        self.interval = interval
+        self.func = func
+        self.args = args
+        self.countdown = self.create_timer()
+    def start(self):
+        self.countdown.start()
+    def reset(self):
+        if DEBUG: print 'reset silence monitor'
+        self.countdown.cancel()
+        self.countdown = self.create_timer()
+        self.start()
+    def create_timer(self):
+        t = Timer(self.interval, self.func, self.args)
+        t.daemon = True
+        return t
 
 nodes_example = {
     '127.0.0.0': {
@@ -92,13 +112,17 @@ update_example_two = {
 
 def update_costs(host, port, costs):
     """ update neighbor's costs """
-    addr = get_addr(host, port)
+    addr = addr2key(host, port)
     if not in_network(addr): return
     node = nodes[addr]
     if not node['is_neighbor']: 
         print 'node {0} is not a neighbor so cannot update costs\n'.format(addr)
         return
+    # restart silence monitor
+    node['silence_monitor'].reset()
+    # set new costs
     node['costs'] = costs
+    # run bellman ford
     estimate_costs()
 
 def broadcast_costs():
@@ -112,8 +136,7 @@ def broadcast(data):
     """ send json data to neighbors """
     data = json.dumps(data)
     for addr in get_neighbors().keys():
-        host, port = addr.split(':')
-        sock.sendto(data, (host, int(port)))
+        sock.sendto(data, key2addr(addr))
 
 def setup_server():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -137,22 +160,29 @@ def parse_argv():
     neighbors = []
     costs = []
     while len(s):
-        neighbors.append(get_addr(host=s[0], port=s[1]))
+        neighbors.append(addr2key(host=s[0], port=s[1]))
         costs.append(float(s[2]))
         del s[0:3]
     return port, timeout, neighbors, costs
 
-def create_node(cost, is_neighbor=False, direct=None, costs=None):
+def create_node(cost, is_neighbor=False, direct=None, costs=None, addr=None):
     """ centralizes the pattern for creating new nodes """
     node = { 'cost': cost, 'is_neighbor': is_neighbor }
     direct = direct if direct != None else float("inf")
     costs  = costs  if costs  != None else defaultdict(lambda: float("inf"))
     node['direct'] = direct
     node['costs'] = costs
+    if is_neighbor:
+        monitor = ResettableTimer(
+            interval = 3*timeout, 
+            func = linkdown,
+            args = list(key2addr(addr)))
+        monitor.start()
+        node['silence_monitor'] = monitor
     return node
 
 def linkdown(host, port):
-    addr = get_addr(host, port)
+    addr = addr2key(host, port)
     if not in_network(neighbor): return
     node = nodes[addr]
     if not node['is_neighbor']: 
@@ -166,7 +196,7 @@ def linkdown(host, port):
     estimate_costs()
 
 def linkup(host, port):
-    addr = get_addr(host, port)
+    addr = addr2key(host, port)
     if not in_network(addr): return
     node = nodes[addr]
     if 'saved' not in node:
@@ -201,7 +231,11 @@ def in_network(addr):
         return False
     return True
 
-def get_addr(host, port):
+def key2addr(key):
+    host, port = key.split(':')
+    return host, int(port)
+
+def addr2key(host, port):
     return "{host}:{port}".format(host=host, port=port)
 
 def get_neighbors():
@@ -221,7 +255,7 @@ def print_nodes():
     print
 
 # map command/update names to functions
-cmds = {
+user_cmds = {
     LINKDOWN: linkdown,
     LINKUP  : linkup,
     SHOWRT  : showrt,
@@ -238,16 +272,17 @@ if __name__ == '__main__':
     # initialize dict of nodes to all neighbors
     nodes = defaultdict(lambda: { 'cost': float("inf"), 'is_neighbor': False })
     for neighbor, cost in zip(neighbors, costs):
-        nodes[neighbor] = create_node(cost=cost, direct=cost, is_neighbor=True)
+        nodes[neighbor] = create_node(
+                cost=cost, direct=cost, is_neighbor=True, addr=neighbor)
     # begin accepting UDP packets
     sock = setup_server()
     # set cost to myself to 0
-    me = get_addr(*sock.getsockname())
-    nodes[me] = create_node(cost=0.0, direct=0.0, is_neighbor=False)
-
+    me = addr2key(*sock.getsockname())
+    nodes[me] = create_node(cost=0.0, direct=0.0, is_neighbor=False, addr=me)
     if DEBUG: print_nodes()
 
     # broadcast costs every timeout seconds
+    broadcast_costs()
     RepeatTimer(timeout, broadcast_costs).start()
 
     # listen for updates from other nodes and user input
@@ -261,7 +296,7 @@ if __name__ == '__main__':
                 user_input = sys.stdin.readline().split()
                 if not len(user_input): continue
                 cmd = user_input[0].lower()
-                if cmd not in cmds:
+                if cmd not in user_cmds:
                     print "'{0}' is not a valid command".format(cmd)
                     continue
                 args = [] 
@@ -271,7 +306,7 @@ if __name__ == '__main__':
                     data = json.dumps({'type': cmd, 'payload': {}})
                     addr = (args[0], int(args[1]))
                     sock.sendto(data, addr)
-                cmds[cmd](*args)
+                user_cmds[cmd](*args)
             else: 
                 # update from another node
                 data, sender = s.recvfrom(SIZE)
