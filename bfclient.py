@@ -1,6 +1,7 @@
-import sys, socket, json
+import sys, socket, json, time
 from select import select
 from collections import defaultdict
+from threading import Thread
 
 DEBUG = True
 if DEBUG:
@@ -62,34 +63,6 @@ def estimate_costs():
             destination['cost'] = cost
     if DEBUG: print_nodes()
 
-def join_network():
-    """ add node to the network """
-    inputs = [sock, sys.stdin]
-    running = True
-    # TODO send route update to notify nodes of joining
-    while running:
-        in_ready, out_ready, except_ready = select(inputs,[],[]) 
-        for s in in_ready:
-            if s == sys.stdin:
-                # input from user
-                cmd, args = parse_cmd(sys.stdin.readline())
-                if cmd not in cmds:
-                    print "command '{0}' is not a valid command".format(cmd)
-                    return
-                cmds[cmd](*args)
-            else: 
-                # update from another node
-                data, sender = s.recvfrom(SIZE)
-                loaded = json.loads(data)
-                update = loaded['type']
-                payload = loaded['payload']
-                if update not in updates:
-                    print "update {0} from {1} not defined".format(update, sender)
-                    return
-                updates[update](*sender, **payload)
-
-    sock.close()
-
 update_example = {
     'type': COSTSUPDATE,
     'payload': {
@@ -114,9 +87,8 @@ def update_costs(host, port, costs):
     neighbor['costs'] = costs
     estimate_costs()
 
-def send_update():
+def broadcast_costs():
     """ send distance vector to neighbors """
-    # TODO get distance vector
     data = json.dumps({
         'type': COSTSUPDATE,
         'payload': {
@@ -124,7 +96,6 @@ def send_update():
         }
     })
     for ne in get_neighbors().keys():
-        # TODO sock send shit
         host, port = ne.split(':')
         port = int(port)
         sock.sendto(data, (host,port))
@@ -135,10 +106,10 @@ def setup_server():
         host = socket.gethostbyname(socket.gethostname())
         sock.bind((host, port))
         if DEBUG:
-            print "listening on {0}:{1}".format(host, port)
+            print "listening on {0}:{1}\n".format(host, port)
     except socket.error, msg:
         print "an error occured binding the server socket. \
-               error code: {0}, msg:{1}".format(msg[0], msg[1])
+               error code: {0}, msg:{1}\n".format(msg[0], msg[1])
         sys.exit()
     return sock
 
@@ -165,15 +136,6 @@ def create_node(cost, is_neighbor=False, direct=None, costs=None):
     node['costs'] = costs
     return node
 
-def parse_cmd(s):
-    """ extract command name and args from string (likely from stdin) """
-    s = s.split()
-    cmd = s[0].lower()
-    args = []
-    if cmd == LINKDOWN or cmd == LINKUP:
-        args = s[1:]
-    return cmd, args
-
 def linkdown(host, port):
     addr = get_addr(host, port)
     # error checks
@@ -196,7 +158,7 @@ def linkup(host, port):
     if not in_network(addr): return
     node = nodes[addr]
     if 'saved' not in node:
-        print 'node {0} was not a previous neighbor'
+        print 'node {0} was not a previous neighbor\n'
         return
     # restore saved direct distance
     node['direct'] = node['saved']
@@ -222,13 +184,13 @@ def close():
 
 def is_neighbor(node):
     if not node['is_neighbor']:
-        print 'node {0} is not a neighbor so no can be taken down'.format(addr)
+        print 'node {0} is not a neighbor so no can be taken down\n'.format(addr)
         return False
     return True
 
 def in_network(addr):
     if addr not in nodes:
-        print 'node {0} is not in the network'.format(addr)
+        print 'node {0} is not in the network\n'.format(addr)
         return False
     return True
 
@@ -257,8 +219,23 @@ updates = {
 
 def print_nodes():
     print "nodes: "
-    for node in nodes.items():
-        pprint(node)
+    for addr, node in nodes.iteritems():
+        print addr
+        for k,v in node.iteritems():
+            print '---- ', k, '\t\t', v
+    print
+
+class RepeatTimer(Thread):
+    def __init__(self, interval, target):
+        Thread.__init__(self)
+        self.target = target
+        self.interval = interval
+        self.daemon = True
+        self.stopped = False
+    def run(self):
+        while not self.stopped:
+            self.target()
+            time.sleep(self.interval)
 
 if __name__ == '__main__':
     port, timeout, neighbors, costs = parse_argv()
@@ -271,6 +248,37 @@ if __name__ == '__main__':
     # set cost to myself to 0
     me = get_addr(*sock.getsockname())
     nodes[me] = create_node(cost=0.0, direct=0.0, is_neighbor=False)
+
     if DEBUG: print_nodes()
-    # add node to network
-    join_network()
+
+    # broadcast costs every timeout seconds
+    RepeatTimer(timeout, broadcast_costs).start()
+
+    # listen for updates from other nodes and user input
+    inputs = [sock, sys.stdin]
+    running = True
+    while running:
+        in_ready, out_ready, except_ready = select(inputs,[],[]) 
+        for s in in_ready:
+            if s == sys.stdin:
+                # input from user
+                s = sys.stdin.readline().split()
+                if not len(s): continue
+                cmd = s[0].lower()
+                if cmd not in cmds:
+                    print "'{0}' is not a valid command".format(cmd)
+                    continue
+                args = [] if cmd not in [LINKDOWN, LINKUP] else s[1:]
+                cmds[cmd](*args)
+            else: 
+                # update from another node
+                data, sender = s.recvfrom(SIZE)
+                loaded = json.loads(data)
+                update = loaded['type']
+                payload = loaded['payload']
+                if update not in updates:
+                    print "update {0} from {1} not defined".format(update, sender)
+                    continue
+                updates[update](*sender, **payload)
+    sock.close()
+
