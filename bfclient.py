@@ -14,6 +14,7 @@ LINKUP = "linkup"
 SHOWRT = "showrt"
 CLOSE = "close"
 COSTSUPDATE= "costs-update"
+SHOWNEIGHBORS = "showneighbors"
 
 class RepeatTimer(Thread):
     """ thread that will call a function every interval seconds """
@@ -163,7 +164,7 @@ def parse_argv():
     neighbors = []
     costs = []
     while len(s):
-        host = localhost if s[0].lower() == 'localhost' else s[0]
+        host = get_host(s[0].lower())
         neighbors.append(addr2key(host=host, port=s[1]))
         costs.append(float(s[2]))
         del s[0:3]
@@ -189,11 +190,11 @@ def create_node(cost, is_neighbor=False, direct=None, costs=None, addr=None):
     return node
 
 def linkdown(host, port):
-    addr = addr2key(host, port)
+    addr = addr2key(get_host(host), port)
     if not in_network(neighbor): return
     node = nodes[addr]
     if not node['is_neighbor']: 
-        print 'node {0} is not a neighbor so no can be taken down\n'.format(addr)
+        print "node {0} is not a neighbor so it can't be taken down\n".format(addr)
         return
     # save direct distance to neighbor, then set to infinity
     node['saved'] = node['direct']
@@ -203,7 +204,7 @@ def linkdown(host, port):
     estimate_costs()
 
 def linkup(host, port):
-    addr = addr2key(host, port)
+    addr = addr2key(get_host(host), port)
     if not in_network(addr): return
     node = nodes[addr]
     if 'saved' not in node:
@@ -216,6 +217,16 @@ def linkup(host, port):
     # run bellman-ford
     estimate_costs()
 
+def show_neighbors():
+    """ show active neighbors """
+    print "neighbors:"
+    for addr, neighbor in get_neighbors().iteritems():
+        print "{addr}, cost:{cost}, direct:{direct}".format(
+                addr   = addr, 
+                cost   = neighbor['cost'],
+                direct = neighbor['direct'])
+    print # extra line
+
 def showrt():
     print datetime.now(), ' Distance vector list is:'
     for addr, node in nodes.iteritems():
@@ -226,6 +237,7 @@ def showrt():
                         destination = addr,
                         cost        = node['cost'],
                         nexthop     = node['route'])
+    print # extra line
 
 def close():
     # notify neighbors that she's comin daaaahwn!
@@ -244,6 +256,10 @@ def key2addr(key):
 
 def addr2key(host, port):
     return "{host}:{port}".format(host=host, port=port)
+
+def get_host(host):
+    """ translate host into ip address """
+    return localhost if host == 'localhost' else host
 
 def get_neighbors():
     """ return dict of all neighbors (does not include self) """
@@ -267,6 +283,7 @@ user_cmds = {
     LINKUP  : linkup,
     SHOWRT  : showrt,
     CLOSE   : close,
+    SHOWNEIGHBORS : show_neighbors,
 }
 updates = {
     LINKDOWN   : linkdown,
@@ -317,6 +334,7 @@ if __name__ == '__main__':
                     # notify neighbor that link is coming down or being restored
                     data = json.dumps({'type': cmd, 'payload': {}})
                     addr = (args[0], int(args[1]))
+                    print 'send {0} to {1}:{2}'.format(data,args[0],int(args[1]))
                     sock.sendto(data, addr)
                 user_cmds[cmd](*args)
             else: 
