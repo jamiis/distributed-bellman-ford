@@ -14,6 +14,18 @@ SHOWRT = "showrt"
 CLOSE = "close"
 COSTSUPDATE= "costs-update"
 
+class RepeatTimer(Thread):
+    def __init__(self, interval, target):
+        Thread.__init__(self)
+        self.target = target
+        self.interval = interval
+        self.daemon = True
+        self.stopped = False
+    def run(self):
+        while not self.stopped:
+            self.target()
+            time.sleep(self.interval)
+
 nodes_example = {
     '127.0.0.0': {
         'cost': 0.0,
@@ -90,17 +102,18 @@ def update_costs(host, port, costs):
     estimate_costs()
 
 def broadcast_costs():
-    """ send distance vector to neighbors """
-    data = json.dumps({
+    """ send estimated path costs to neighbors """
+    broadcast({
         'type': COSTSUPDATE,
-        'payload': {
-            'costs': get_costs(),
-        }
+        'payload': { 'costs': get_costs() }
     })
-    for ne in get_neighbors().keys():
-        host, port = ne.split(':')
-        port = int(port)
-        sock.sendto(data, (host,port))
+
+def broadcast(data):
+    """ send json data to neighbors """
+    data = json.dumps(data)
+    for addr in get_neighbors().keys():
+        host, port = addr.split(':')
+        sock.sendto(data, (host, int(port)))
 
 def setup_server():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -112,7 +125,7 @@ def setup_server():
     except socket.error, msg:
         print "an error occured binding the server socket. \
                error code: {0}, msg:{1}\n".format(msg[0], msg[1])
-        sys.exit()
+        sys.exit(1)
     return sock
 
 def parse_argv():
@@ -140,8 +153,6 @@ def create_node(cost, is_neighbor=False, direct=None, costs=None):
 
 def linkdown(host, port):
     addr = get_addr(host, port)
-    # error checks
-    # TODO should we even check for node not in network?
     if not in_network(neighbor): return
     node = nodes[addr]
     if not node['is_neighbor']: 
@@ -151,10 +162,8 @@ def linkdown(host, port):
     node['saved'] = node['direct']
     node['direct'] = float("inf")
     node['is_neighbor'] = False
-    # recalculate cost estimates
+    # run bellman-ford
     estimate_costs()
-    # TODO send linkdown msg to neighbor
-    if DEBUG: print_nodes()
 
 def linkup(host, port):
     addr = get_addr(host, port)
@@ -167,8 +176,8 @@ def linkup(host, port):
     node['direct'] = node['saved']
     del node['saved']
     node['is_neighbor'] = True
-    # TODO notify neighboring node of the linkup
-    if DEBUG: print_nodes()
+    # run bellman-ford
+    estimate_costs()
 
 def showrt():
     '''
@@ -182,7 +191,8 @@ def showrt():
     pass
 
 def close():
-    # TODO send linkdown to neighbors
+    # notify neighbors that she's comin daaaahwn!
+    broadcast({'type': LINKDOWN, 'payload': {}})
     sys.exit()
 
 def in_network(addr):
@@ -202,6 +212,14 @@ def get_costs():
     """ return dict mapping nodes to costs """
     return dict([ (no[0], no[1]['cost']) for no in nodes.items()] )
 
+def print_nodes():
+    print "nodes: "
+    for addr, node in nodes.iteritems():
+        print addr
+        for k,v in node.iteritems():
+            print '---- ', k, '\t\t', v
+    print
+
 # map command/update names to functions
 cmds = {
     LINKDOWN: linkdown,
@@ -214,26 +232,6 @@ updates = {
     LINKUP     : linkup,
     COSTSUPDATE: update_costs,
 }
-
-def print_nodes():
-    print "nodes: "
-    for addr, node in nodes.iteritems():
-        print addr
-        for k,v in node.iteritems():
-            print '---- ', k, '\t\t', v
-    print
-
-class RepeatTimer(Thread):
-    def __init__(self, interval, target):
-        Thread.__init__(self)
-        self.target = target
-        self.interval = interval
-        self.daemon = True
-        self.stopped = False
-    def run(self):
-        while not self.stopped:
-            self.target()
-            time.sleep(self.interval)
 
 if __name__ == '__main__':
     port, timeout, neighbors, costs = parse_argv()
