@@ -91,10 +91,11 @@ def estimate_costs():
             nexthop = ''
             for neighbor_addr, neighbor in get_neighbors().iteritems():
                 # distance = direct cost to neighbor + cost from destination to neighbor
-                dist = neighbor['direct'] + destination['costs'][neighbor_addr]
-                if dist < cost:
-                    cost = dist
-                    nexthop = neighbor_addr
+                if neighbor_addr in destination['costs']:
+                    dist = neighbor['direct'] + destination['costs'][neighbor_addr]
+                    if dist < cost:
+                        cost = dist
+                        nexthop = neighbor_addr
             # set new estimated cost to node in the network
             destination['cost'] = cost
             destination['route'] = nexthop
@@ -115,18 +116,28 @@ update_example_two = {
     'payload': {},
 }
 
-def update_costs(host, port, costs):
+def update_costs(host, port, **kwargs):
     """ update neighbor's costs """
+    costs = kwargs['costs']
     addr = addr2key(host, port)
-    if not in_network(addr): return
-    node = nodes[addr]
-    if not node['is_neighbor']: 
-        print 'node {0} is not a neighbor so cannot update costs\n'.format(addr)
+    if not in_network(addr):
         return
-    # restart silence monitor
-    node['silence_monitor'].reset()
-    # set new costs
-    node['costs'] = costs
+    if not nodes[addr]['is_neighbor']: 
+        # make it your neighbor!
+        print 'making new neighbor {0}\n'.format(addr)
+        del nodes[addr]
+        nodes[addr] = create_node(
+                cost        = nodes[addr]['cost'], 
+                is_neighbor = True,
+                direct      = kwargs['neighbor']['direct'],
+                costs       = costs,
+                addr        = addr)
+    else:
+        node = nodes[addr]
+        # restart silence monitor
+        node['silence_monitor'].reset()
+        # set new costs
+        node['costs'] = costs
     # run bellman ford
     estimate_costs()
 
@@ -139,9 +150,10 @@ def broadcast_costs():
 
 def broadcast(data):
     """ send json data to neighbors """
-    data = json.dumps(data)
-    for addr in get_neighbors().keys():
-        sock.sendto(data, key2addr(addr))
+    for addr, neighbor in get_neighbors().iteritems():
+        assert 'payload' in data
+        data['payload']['neighbor'] = { 'direct': neighbor['direct'] }
+        sock.sendto(json.dumps(data), key2addr(addr))
 
 def setup_server():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -189,7 +201,7 @@ def create_node(cost, is_neighbor=False, direct=None, costs=None, addr=None):
         node['silence_monitor'] = monitor
     return node
 
-def linkdown(host, port):
+def linkdown(host, port, **kwargs):
     addr = addr2key(get_host(host), port)
     if not in_network(neighbor): return
     node = nodes[addr]
@@ -219,7 +231,7 @@ def linkup(host, port):
 
 def show_neighbors():
     """ show active neighbors """
-    print "neighbors:"
+    print datetime.now(), "Neighbors: "
     for addr, neighbor in get_neighbors().iteritems():
         print "{addr}, cost:{cost}, direct:{direct}".format(
                 addr   = addr, 
@@ -228,12 +240,12 @@ def show_neighbors():
     print # extra line
 
 def showrt():
-    print datetime.now(), ' Distance vector list is:'
+    print datetime.now(), " Distance vector list is:"
     for addr, node in nodes.iteritems():
         if addr != me:
-            print ('Destination = {destination}, '
-                   'Cost = {cost}, '
-                   'Link = ({nexthop})').format(
+            print ("Destination = {destination}, "
+                   "Cost = {cost}, "
+                   "Link = ({nexthop})").format(
                         destination = addr,
                         cost        = node['cost'],
                         nexthop     = node['route'])
@@ -263,11 +275,11 @@ def get_host(host):
 
 def get_neighbors():
     """ return dict of all neighbors (does not include self) """
-    return dict([d for d in nodes.items() if d[1]['is_neighbor']])
+    return dict([d for d in nodes.iteritems() if d[1]['is_neighbor']])
 
 def get_costs():
     """ return dict mapping nodes to costs """
-    return dict([ (no[0], no[1]['cost']) for no in nodes.items()] )
+    return dict([ (no[0], no[1]['cost']) for no in nodes.iteritems()] )
 
 def print_nodes():
     print "nodes: "
