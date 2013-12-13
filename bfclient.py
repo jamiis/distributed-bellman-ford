@@ -82,9 +82,11 @@ def update_costs(host, port, costs):
     """ update neighbor's costs """
     addr = get_addr(host, port)
     if not in_network(addr): return
-    neighbor = nodes[addr]
-    if not is_neighbor(neighbor): return
-    neighbor['costs'] = costs
+    node = nodes[addr]
+    if not node['is_neighbor']: 
+        print 'node {0} is not a neighbor so cannot update costs\n'.format(addr)
+        return
+    node['costs'] = costs
     estimate_costs()
 
 def broadcast_costs():
@@ -142,8 +144,9 @@ def linkdown(host, port):
     # TODO should we even check for node not in network?
     if not in_network(neighbor): return
     node = nodes[addr]
-    if not is_neighbor(node): return
-
+    if not node['is_neighbor']: 
+        print 'node {0} is not a neighbor so no can be taken down\n'.format(addr)
+        return
     # save direct distance to neighbor, then set to infinity
     node['saved'] = node['direct']
     node['direct'] = float("inf")
@@ -182,12 +185,6 @@ def close():
     # TODO send linkdown to neighbors
     sys.exit()
 
-def is_neighbor(node):
-    if not node['is_neighbor']:
-        print 'node {0} is not a neighbor so no can be taken down\n'.format(addr)
-        return False
-    return True
-
 def in_network(addr):
     if addr not in nodes:
         print 'node {0} is not in the network\n'.format(addr)
@@ -214,6 +211,7 @@ cmds = {
 }
 updates = {
     LINKDOWN   : linkdown,
+    LINKUP     : linkup,
     COSTSUPDATE: update_costs,
 }
 
@@ -262,13 +260,19 @@ if __name__ == '__main__':
         for s in in_ready:
             if s == sys.stdin:
                 # input from user
-                s = sys.stdin.readline().split()
-                if not len(s): continue
-                cmd = s[0].lower()
+                user_input = sys.stdin.readline().split()
+                if not len(user_input): continue
+                cmd = user_input[0].lower()
                 if cmd not in cmds:
                     print "'{0}' is not a valid command".format(cmd)
                     continue
-                args = [] if cmd not in [LINKDOWN, LINKUP] else s[1:]
+                args = [] 
+                if cmd in [LINKDOWN, LINKUP]:
+                    args = user_input[1:]
+                    # notify neighbor that link is coming down or being restored
+                    data = json.dumps({'type': cmd, 'payload': {}})
+                    addr = (args[0], int(args[1]))
+                    sock.sendto(data, addr)
                 cmds[cmd](*args)
             else: 
                 # update from another node
@@ -277,7 +281,7 @@ if __name__ == '__main__':
                 update = loaded['type']
                 payload = loaded['payload']
                 if update not in updates:
-                    print "update {0} from {1} not defined".format(update, sender)
+                    print "update '{0}' not defined".format(update)
                     continue
                 updates[update](*sender, **payload)
     sock.close()
