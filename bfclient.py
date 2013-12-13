@@ -4,17 +4,13 @@ from collections import defaultdict
 from threading import Thread, Timer
 from datetime import datetime
 
-DEBUG = True
-if DEBUG:
-    from pprint import pprint
-
 SIZE = 1024
 LINKDOWN = "linkdown"
 LINKUP = "linkup"
 SHOWRT = "showrt"
 CLOSE = "close"
 COSTSUPDATE= "costs-update"
-SHOWNEIGHBORS = "showneighbors"
+SHOWNEIGHBORS = "neighbors"
 
 class RepeatTimer(Thread):
     """ thread that will call a function every interval seconds """
@@ -39,7 +35,6 @@ class ResettableTimer():
     def start(self):
         self.countdown.start()
     def reset(self):
-        if DEBUG: print 'reset silence monitor'
         self.countdown.cancel()
         self.countdown = self.create_timer()
         self.start()
@@ -90,16 +85,15 @@ def estimate_costs():
             cost = float("inf")
             nexthop = ''
             for neighbor_addr, neighbor in get_neighbors().iteritems():
-                # distance = direct cost to neighbor + cost from destination to neighbor
-                if neighbor_addr in destination['costs']:
-                    dist = neighbor['direct'] + destination['costs'][neighbor_addr]
+                # distance = direct cost to neighbor + cost from neighbor to destination
+                if destination_addr in neighbor['costs']:
+                    dist = neighbor['direct'] + neighbor['costs'][destination_addr]
                     if dist < cost:
                         cost = dist
                         nexthop = neighbor_addr
             # set new estimated cost to node in the network
             destination['cost'] = cost
             destination['route'] = nexthop
-    if DEBUG: print_nodes()
 
 update_example = {
     'type': COSTSUPDATE,
@@ -120,10 +114,15 @@ def update_costs(host, port, **kwargs):
     """ update neighbor's costs """
     costs = kwargs['costs']
     addr = addr2key(host, port)
-    if not in_network(addr):
-        return
+    if not in_network(addr): return
+    # if a node listed in costs is not in our list of nodes...
+    for node in costs:
+        if node not in nodes:
+            # ... create a new node
+            nodes[node] = default_node()
+    # if node not a neighbor ...
     if not nodes[addr]['is_neighbor']: 
-        # make it your neighbor!
+        # ... make it your neighbor!
         print 'making new neighbor {0}\n'.format(addr)
         del nodes[addr]
         nodes[addr] = create_node(
@@ -133,11 +132,11 @@ def update_costs(host, port, **kwargs):
                 costs       = costs,
                 addr        = addr)
     else:
+        # otherwise just update node costs
         node = nodes[addr]
+        node['costs'] = costs
         # restart silence monitor
         node['silence_monitor'].reset()
-        # set new costs
-        node['costs'] = costs
     # run bellman ford
     estimate_costs()
 
@@ -159,8 +158,7 @@ def setup_server():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         sock.bind((localhost, port))
-        if DEBUG:
-            print "listening on {0}:{1}\n".format(localhost, port)
+        print "listening on {0}:{1}\n".format(localhost, port)
     except socket.error, msg:
         print "an error occured binding the server socket. \
                error code: {0}, msg:{1}\n".format(msg[0], msg[1])
@@ -182,14 +180,16 @@ def parse_argv():
         del s[0:3]
     return port, timeout, neighbors, costs
 
-def create_node(cost, is_neighbor=False, direct=None, costs=None, addr=None):
+def default_node():
+    return { 'cost': float("inf"), 'is_neighbor': False, 'route': '' }
+
+def create_node(cost, is_neighbor, direct=None, costs=None, addr=None):
     """ centralizes the pattern for creating new nodes """
-    node = { 'cost': cost, 'is_neighbor': is_neighbor }
-    direct = direct if direct != None else float("inf")
-    costs  = costs  if costs  != None else defaultdict(lambda: float("inf"))
-    node['direct'] = direct
-    node['costs'] = costs
-    node['route'] = ''
+    node = default_node()
+    node['cost'] = cost
+    node['is_neighbor'] = is_neighbor
+    node['direct'] = direct if direct != None else float("inf")
+    node['costs']  = costs  if costs  != None else defaultdict(lambda: float("inf"))
     if is_neighbor:
         node['route'] = addr
         # ensure neighbor is transmitting cost updates using a resettable timer
@@ -231,7 +231,8 @@ def linkup(host, port):
 
 def show_neighbors():
     """ show active neighbors """
-    print datetime.now(), "Neighbors: "
+    print datetime.now()
+    print "Neighbors: "
     for addr, neighbor in get_neighbors().iteritems():
         print "{addr}, cost:{cost}, direct:{direct}".format(
                 addr   = addr, 
@@ -240,7 +241,8 @@ def show_neighbors():
     print # extra line
 
 def showrt():
-    print datetime.now(), " Distance vector list is:"
+    print datetime.now()
+    print " Distance vector list is:"
     for addr, node in nodes.iteritems():
         if addr != me:
             print ("Destination = {destination}, "
@@ -307,11 +309,7 @@ if __name__ == '__main__':
     localhost = socket.gethostbyname(socket.gethostname())
     port, timeout, neighbors, costs = parse_argv()
     # initialize dict of nodes to all neighbors
-    nodes = defaultdict(lambda: { 
-        'cost': float("inf"),
-        'is_neighbor': False,
-        'route': '',
-    })
+    nodes = defaultdict(lambda: default_node())
     for neighbor, cost in zip(neighbors, costs):
         nodes[neighbor] = create_node(
                 cost=cost, direct=cost, is_neighbor=True, addr=neighbor)
@@ -320,8 +318,6 @@ if __name__ == '__main__':
     # set cost to myself to 0
     me = addr2key(*sock.getsockname())
     nodes[me] = create_node(cost=0.0, direct=0.0, is_neighbor=False, addr=me)
-    if DEBUG: print_nodes()
-
     # broadcast costs every timeout seconds
     broadcast_costs()
     RepeatTimer(timeout, broadcast_costs).start()
