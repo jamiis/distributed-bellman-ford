@@ -234,9 +234,12 @@ def showrt():
 
 def close():
     """ notify all neighbors that she's a comin daaaahwn! then close process"""
+    ''' I am commenting out the code that instantly notifies neighbors that the link
+        is being closed because requirements say a 'close' cmd "is like simulating link failure"
     data = {'type': LINKDOWN, 'payload': {}}
     for neighbor_addr, neighbor in get_neighbors().iteritems():
         sock.sendto(json.dumps(data), key2addr(neighbor_addr))
+    '''
     sys.exit()
 
 def in_network(addr):
