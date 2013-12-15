@@ -1,6 +1,6 @@
 import sys, socket, json, time
 from select import select
-from collections import defaultdict
+from collections import defaultdict, namedtuple
 from threading import Thread, Timer
 from datetime import datetime
 from copy import deepcopy
@@ -118,31 +118,16 @@ def broadcast_costs():
         # send (potentially 'poisoned') costs to neighbor
         sock.sendto(json.dumps(data), key2addr(neighbor_addr))
 
-def setup_server():
+def setup_server(host, port):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        sock.bind((localhost, port))
-        print "listening on {0}:{1}\n".format(localhost, port)
+        sock.bind((host, port))
+        print "listening on {0}:{1}\n".format(host, port)
     except socket.error, msg:
         print "an error occured binding the server socket. \
                error code: {0}, msg:{1}\n".format(msg[0], msg[1])
         sys.exit(1)
     return sock
-
-def parse_argv():
-    """ pythonicize bflient command args """
-    s = sys.argv[1:]
-    port = int(s.pop(0))
-    timeout = float(s.pop(0))
-    # iterate through s extracting neighbors and costs along the way
-    neighbors = []
-    costs = []
-    while len(s):
-        host = get_host(s[0].lower())
-        neighbors.append(addr2key(host=host, port=s[1]))
-        costs.append(float(s[2]))
-        del s[0:3]
-    return port, timeout, neighbors, costs
 
 def default_node():
     return { 'cost': float("inf"), 'is_neighbor': False, 'route': '' }
@@ -158,7 +143,7 @@ def create_node(cost, is_neighbor, direct=None, costs=None, addr=None):
         node['route'] = addr
         # ensure neighbor is transmitting cost updates using a resettable timer
         monitor = ResettableTimer(
-            interval = 3*timeout, 
+            interval = 3*run_args.timeout, 
             func = linkdown,
             args = list(key2addr(addr)))
         monitor.start()
@@ -169,7 +154,7 @@ def get_node(host, port):
     """ returns formatted address and node info for that addr """
     error = False
     addr = addr2key(get_host(host), port)
-    if not in_network(neighbor):
+    if not in_network(addr):
         error = 'node not in network'
     node = nodes[addr]
     return node, addr, error
@@ -271,6 +256,17 @@ def get_host(host):
     """ translate host into ip address """
     return localhost if host == 'localhost' else host
 
+def get_neighbors():
+    """ return dict of all neighbors (does not include self) """
+    return dict([d for d in nodes.iteritems() if d[1]['is_neighbor']])
+
+def is_number(n):
+    try:
+        float(n)
+        return True
+    except ValueError:
+        return False
+
 def is_int(i):
     try:
         int(i)
@@ -278,41 +274,74 @@ def is_int(i):
     except ValueError:
         return False
 
-def get_neighbors():
-    """ return dict of all neighbors (does not include self) """
-    return dict([d for d in nodes.iteritems() if d[1]['is_neighbor']])
+def parse_argv():
+    """
+    pythonicize bflient run args
+    (note: yes, I know I should be raising exceptions instead of returning {'err'} dicts)
+    """
+    s = sys.argv[1:]
+    parsed = {}
+    # validate port
+    port = s.pop(0)
+    if not is_int(port):
+        return { 'error': "port values must be integers. {0} is not an int.".format(port) }
+    parsed['port'] = int(port)
+    # validate timeout
+    timeout = s.pop(0)
+    if not is_number(timeout):
+        return { 'error': "timeout must be a number. {0} is not a number.".format(timeout) }
+    parsed['timeout'] = float(timeout)
+    # iterate through s extracting and validating neighbors and costs along the way
+    parsed['neighbors'] = []
+    parsed['costs'] = []
+    while len(s):
+        if len(s) < 3:
+            return { 'error': "please provide host, port, and link cost for each link." }
+        host = get_host(s[0].lower())
+        port = s[1]
+        if not is_int(port):
+            return { 'error': "port values must be integers. {0} is not an int.".format(port) }
+        parsed['neighbors'].append(addr2key(host, port))
+        cost = s[2]
+        if not is_number(cost):
+            return { 'error': "link costs must be numbers. {0} is not a number.".format(cost) }
+        parsed['costs'].append(float(s[2]))
+        del s[0:3]
+    return parsed
 
 def parse_user_input(user_input):
     """
     validate user input and parse values into dict. returns (error, parsed) tuple.
-    (personal aside: fiddling around w/ style of returning (error, value) tuple)
+    (note: yes, I know I should be raising exceptions instead of returning {'err'} dicts)
     """
     # define default return value
     parsed = { 'addr': (), 'payload': {} }
     user_input = user_input.split()
     if not len(user_input):
-        return "please provide a command\n",
+        return { 'error': "please provide a command\n" }
     cmd = user_input[0].lower()
     # verify cmd is valid
     if cmd not in user_cmds:
-        return "'{0}' is not a valid command\n".format(cmd),
+        return { 'error': "'{0}' is not a valid command\n".format(cmd) }
     # cmds below require args
     if cmd in [LINKDOWN, LINKUP, LINKCHANGE]:
         args = user_input[1:]
         # validate args
         if cmd in [LINKDOWN, LINKUP] and len(args) != 2:
-            return "'{0}' cmd requires args: host, port\n".format(cmd),
+            return { 'error': "'{0}' cmd requires args: host, port\n".format(cmd) }
         elif cmd == LINKCHANGE and len(args) != 3:
-            return "'{0}' cmd requires args: host, port, link cost\n".format(cmd),
-        if not is_int(args[1]):
-            return "port must be an integer value\n",
-        parsed['addr'] = (get_host(args[0]), int(args[1]))
+            return { 'error': "'{0}' cmd requires args: host, port, link cost\n".format(cmd) }
+        port = args[1]
+        if not is_int(port):
+            return { 'error': "port must be an integer value\n" }
+        parsed['addr'] = (get_host(args[0]), int(port))
         if cmd == LINKCHANGE:
-            if not is_int(args[2]):
-                return "new link weight must be an integer\n",
-            parsed['payload'] = { 'direct': int(args[2]) }
+            cost = args[2]
+            if not is_number(cost):
+                return { 'error': "new link weight must be a number\n" }
+            parsed['payload'] = { 'direct': float(cost) }
     parsed['cmd'] = cmd
-    return ('', parsed)
+    return parsed
 
 def print_nodes():
     """ helper function for debugging """
@@ -341,20 +370,25 @@ updates = {
 
 if __name__ == '__main__':
     localhost = socket.gethostbyname(socket.gethostname())
-    port, timeout, neighbors, costs = parse_argv()
+    parsed = parse_argv()
+    if 'error' in parsed:
+        print parsed['error']
+        sys.exit(1)
+    RunArgs = namedtuple('RunInfo', 'port timeout neighbors costs')
+    run_args = RunArgs(**parsed) 
     # initialize dict of nodes to all neighbors
     nodes = defaultdict(lambda: default_node())
-    for neighbor, cost in zip(neighbors, costs):
+    for neighbor, cost in zip(run_args.neighbors, run_args.costs):
         nodes[neighbor] = create_node(
                 cost=cost, direct=cost, is_neighbor=True, addr=neighbor)
     # begin accepting UDP packets
-    sock = setup_server()
+    sock = setup_server(localhost, run_args.port)
     # set cost to myself to 0
     me = addr2key(*sock.getsockname())
     nodes[me] = create_node(cost=0.0, direct=0.0, is_neighbor=False, addr=me)
     # broadcast costs every timeout seconds
     broadcast_costs()
-    RepeatTimer(timeout, broadcast_costs).start()
+    RepeatTimer(run_args.timeout, broadcast_costs).start()
 
     # listen for updates from other nodes and user input
     inputs = [sock, sys.stdin]
@@ -364,9 +398,9 @@ if __name__ == '__main__':
         for s in in_ready:
             if s == sys.stdin:
                 # user input command
-                err, parsed = parse_user_input(sys.stdin.readline())
-                if err:
-                    print err
+                parsed = parse_user_input(sys.stdin.readline())
+                if 'error' in parsed:
+                    print parsed['error']
                     continue
                 cmd = parsed['cmd']
                 if cmd in [LINKDOWN, LINKUP, LINKCHANGE]:
