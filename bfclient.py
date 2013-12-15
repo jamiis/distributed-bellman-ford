@@ -3,6 +3,7 @@ from select import select
 from collections import defaultdict
 from threading import Thread, Timer
 from datetime import datetime
+from copy import deepcopy
 
 SIZE = 4096
 LINKDOWN = "linkdown"
@@ -94,18 +95,23 @@ def update_costs(host, port, **kwargs):
     estimate_costs()
 
 def broadcast_costs():
-    """ send estimated path costs to neighbors """
-    broadcast({
-        'type': COSTSUPDATE,
-        'payload': { 'costs': get_costs() }
-    })
-
-def broadcast(data):
-    """ send json data to neighbors """
-    for addr, neighbor in get_neighbors().iteritems():
-        assert 'payload' in data
+    """ send estimated path costs to each neighbor """
+    costs = { addr: node['cost'] for addr, node in nodes.iteritems() }
+    data = { 'type': COSTSUPDATE }
+    for neighbor_addr, neighbor in get_neighbors().iteritems():
+        # poison reverse!!! muhuhhahaha
+        poisoned_costs = deepcopy(costs)
+        for dest_addr, cost in costs.iteritems():
+            # only do poisoned reverse if destination not me or neighbor
+            if dest_addr not in [me, neighbor_addr]:
+                # if we route through neighbor to get to destination ...
+                if nodes[dest_addr]['route'] == neighbor_addr:
+                    # ... tell neighbor distance to destination is infinty!
+                    poisoned_costs[dest_addr] = float("inf")
+        data['payload'] = { 'costs': poisoned_costs }
         data['payload']['neighbor'] = { 'direct': neighbor['direct'] }
-        sock.sendto(json.dumps(data), key2addr(addr))
+        # send (potentially 'poisoned') costs to neighbor
+        sock.sendto(json.dumps(data), key2addr(neighbor_addr))
 
 def setup_server():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -198,6 +204,7 @@ def show_neighbors():
     print # extra line
 
 def showrt():
+    """ display routing info: cost to destination; route to take """
     print formatted_now()
     print "Distance vector list is:"
     for addr, node in nodes.iteritems():
@@ -211,8 +218,10 @@ def showrt():
     print # extra line
 
 def close():
-    # notify neighbors that she's comin daaaahwn!
-    broadcast({'type': LINKDOWN, 'payload': {}})
+    """ notify all neighbors that she's a comin daaaahwn! then close process"""
+    data = {'type': LINKDOWN, 'payload': {}}
+    for neighbor_addr, neighbor in get_neighbors().iteritems():
+        sock.sendto(json.dumps(data), key2addr(neighbor_addr))
     sys.exit()
 
 def in_network(addr):
@@ -235,10 +244,6 @@ def get_host(host):
 def get_neighbors():
     """ return dict of all neighbors (does not include self) """
     return dict([d for d in nodes.iteritems() if d[1]['is_neighbor']])
-
-def get_costs():
-    """ return dict mapping nodes to costs """
-    return dict([ (no[0], no[1]['cost']) for no in nodes.iteritems()] )
 
 def print_nodes():
     print "nodes: "
