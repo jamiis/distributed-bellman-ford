@@ -6,11 +6,16 @@ from datetime import datetime
 from copy import deepcopy
 
 SIZE = 4096
-LINKDOWN = "linkdown"
-LINKUP = "linkup"
-SHOWRT = "showrt"
-CLOSE = "close"
-COSTSUPDATE= "costs-update"
+
+# user commands and inter-node protocol update types
+# note: set of commands and set of protocol messages intersect! 
+#       if you want a list see user_cmds and udpates near main.
+LINKDOWN      = "linkdown"
+LINKUP        = "linkup"
+LINKCHANGE    = "linkchange"
+SHOWRT        = "showrt"
+CLOSE         = "close"
+COSTSUPDATE   = "costsupdate"
 SHOWNEIGHBORS = "neighbors"
 
 class RepeatTimer(Thread):
@@ -160,10 +165,35 @@ def create_node(cost, is_neighbor, direct=None, costs=None, addr=None):
         node['silence_monitor'] = monitor
     return node
 
-def linkdown(host, port, **kwargs):
+def get_node(host, port):
+    """ returns formatted address and node info for that addr """
+    error = False
     addr = addr2key(get_host(host), port)
-    if not in_network(neighbor): return
+    if not in_network(neighbor):
+        error = 'node not in network'
     node = nodes[addr]
+    return node, addr, error
+
+def linkchange(host, port, **kwargs):
+    node, addr, err = get_node(host, port)
+    if err: return
+    if not node['is_neighbor']: 
+        print "node {0} is not a neighbor so the link cost can't be changed\n".format(addr)
+        return
+    direct = kwargs['direct']
+    if direct < 1:
+        print "the minimum amount a link cost between nodes can be is 1"
+        return
+    if 'saved' in node:
+        print "this link currently down. please first bring link back to life using LINKUP cmd."
+        return
+    node['direct'] = direct
+    # run bellman-ford
+    estimate_costs()
+
+def linkdown(host, port, **kwargs):
+    node, addr, err = get_node(host, port)
+    if err: return
     if not node['is_neighbor']: 
         print "node {0} is not a neighbor so it can't be taken down\n".format(addr)
         return
@@ -175,10 +205,10 @@ def linkdown(host, port, **kwargs):
     # run bellman-ford
     estimate_costs()
 
-def linkup(host, port):
-    addr = addr2key(get_host(host), port)
-    if not in_network(addr): return
-    node = nodes[addr]
+def linkup(host, port, **kwargs):
+    node, addr, err = get_node(host, port)
+    if err: return
+    # make sure node was previously taken down via LINKDOWN cmd
     if 'saved' not in node:
         print "{0} wasn't a previous neighbor\n".format(addr)
         return
@@ -241,11 +271,51 @@ def get_host(host):
     """ translate host into ip address """
     return localhost if host == 'localhost' else host
 
+def is_int(i):
+    try:
+        int(i)
+        return True
+    except ValueError:
+        return False
+
 def get_neighbors():
     """ return dict of all neighbors (does not include self) """
     return dict([d for d in nodes.iteritems() if d[1]['is_neighbor']])
 
+def parse_user_input(user_input):
+    """
+    validate user input and parse values into dict. returns (error, parsed) tuple.
+    (personal aside: fiddling around w/ style of returning (error, value) tuple)
+    """
+    # define default return value
+    parsed = { 'addr': (), 'payload': {} }
+    user_input = user_input.split()
+    if not len(user_input):
+        return "please provide a command\n",
+    cmd = user_input[0].lower()
+    # verify cmd is valid
+    if cmd not in user_cmds:
+        return "'{0}' is not a valid command\n".format(cmd),
+    # cmds below require args
+    if cmd in [LINKDOWN, LINKUP, LINKCHANGE]:
+        args = user_input[1:]
+        # validate args
+        if cmd in [LINKDOWN, LINKUP] and len(args) != 2:
+            return "'{0}' cmd requires args: host, port\n".format(cmd),
+        elif cmd == LINKCHANGE and len(args) != 3:
+            return "'{0}' cmd requires args: host, port, link cost\n".format(cmd),
+        if not is_int(args[1]):
+            return "port must be an integer value\n",
+        parsed['addr'] = (get_host(args[0]), int(args[1]))
+        if cmd == LINKCHANGE:
+            if not is_int(args[2]):
+                return "new link weight must be an integer\n",
+            parsed['payload'] = { 'direct': int(args[2]) }
+    parsed['cmd'] = cmd
+    return ('', parsed)
+
 def print_nodes():
+    """ helper function for debugging """
     print "nodes: "
     for addr, node in nodes.iteritems():
         print addr
@@ -255,15 +325,17 @@ def print_nodes():
 
 # map command/update names to functions
 user_cmds = {
-    LINKDOWN: linkdown,
-    LINKUP  : linkup,
-    SHOWRT  : showrt,
-    CLOSE   : close,
+    LINKDOWN   : linkdown,
+    LINKUP     : linkup,
+    LINKCHANGE : linkchange,
+    SHOWRT     : showrt,
+    CLOSE      : close,
     SHOWNEIGHBORS : show_neighbors,
 }
 updates = {
     LINKDOWN   : linkdown,
     LINKUP     : linkup,
+    LINKCHANGE : linkchange,
     COSTSUPDATE: update_costs,
 }
 
@@ -291,24 +363,18 @@ if __name__ == '__main__':
         in_ready, out_ready, except_ready = select(inputs,[],[]) 
         for s in in_ready:
             if s == sys.stdin:
-                # input from user
-                user_input = sys.stdin.readline().split()
-                if not len(user_input): continue
-                cmd = user_input[0].lower()
-                if cmd not in user_cmds:
-                    print "'{0}' is not a valid command\n".format(cmd)
+                # user input command
+                err, parsed = parse_user_input(sys.stdin.readline())
+                if err:
+                    print err
                     continue
-                args = [] 
-                if cmd in [LINKDOWN, LINKUP]:
-                    args = user_input[1:]
-                    if len(args) != 2:
-                        print "'{0}' cmd requires host and port args\n".format(cmd)
-                        continue
-                    # notify neighbor that link is coming down or being restored
-                    data = json.dumps({'type': cmd, 'payload': {}})
-                    addr = (get_host(args[0]), int(args[1]))
-                    sock.sendto(data, addr)
-                user_cmds[cmd](*args)
+                cmd = parsed['cmd']
+                if cmd in [LINKDOWN, LINKUP, LINKCHANGE]:
+                    # notify node on other end of the link of action
+                    data = json.dumps({ 'type': cmd, 'payload': parsed['payload'] })
+                    sock.sendto(data, parsed['addr'])
+                # perform cmd on this side of the link
+                user_cmds[cmd](*parsed['addr'], **parsed['payload'])
             else: 
                 # update from another node
                 data, sender = s.recvfrom(SIZE)
