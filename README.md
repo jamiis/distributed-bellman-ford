@@ -1,4 +1,4 @@
-network layer routing via distributed bellman-ford.
+simulated network layer routing via distributed bellman-ford.
 http://xkcd.com/69/
 
 aka, distance vector routing with poison reverse.
