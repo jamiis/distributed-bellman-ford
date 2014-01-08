@@ -1,4 +1,4 @@
-Simulated network-layer routing via the distributed bellman-ford algorithm, 
+Simulated network-layer routing via the distributed Bellman-Ford algorithm, 
 aka [distance vector routing](http://en.wikipedia.org/wiki/Distance-vector_routing_protocol) with poison reverse.
 
 ![alt text](http://imgs.xkcd.com/comics/pillow_talk.jpg "Maybe I should've tried Wexler?")
@@ -13,7 +13,7 @@ python bfclient.py <listening-port> <timeout> <ip-address1 port1 distance1> <ip-
 ```
 Nodes listen on `localhost`:`listening-port`. `timeout` is how frequently a node broadcasts its distance vector to its neighbors. Edges to other nodes in the network are defined through the `ip-address port distance` argument triples.
 
-Note: timeouts should be within 3x each other, e.g. 1 second and 2.9 seconds. If, say, one node's timeout is 3x greater than a neighbor's timeout, then, as defined in code, the link will be closed. Because one node still believe the edge is active, the edge will be reactivated a moment later. This will continue to happen over and over. For this reason it is important to set the timeouts to within 3x each other.
+Timeouts should be within 3x each other, e.g. 1 second and 2.9 seconds. If, say, one node's timeout is 3x greater than a neighbor's timeout, then, as defined in code, the link will be closed. Because one node still believes the edge is active, the edge will be reactivated a moment later. This will continue to happen over and over. For this reason it is important to set the timeouts of connected nodes to within 3x each other.
 
 ### Examples
 
@@ -45,11 +45,9 @@ Note: timeouts should be within 3x each other, e.g. 1 second and 2.9 seconds. If
 ### User Input
 
 Available commands while client is active:
-```
-neighbors
-showrt
-linkdown <neighbor-ip> <port>
-linkup <neighbor-ip> <port>
-linkchange <neighbor-ip> <port> <link-cost>
-close
-```
+- `neighbors` output a node's neighbors
+- `showrt` output routing table
+- `linkdown <neighbor-ip> <port>` take down an network edge
+- `linkup <neighbor-ip> <port>` restore a link that was previously taken down using `linkdown`
+- `linkchange <neighbor-ip> <port> <link-cost>` change an edge's cost
+- `close` remove node from network. simulates a node failure.
